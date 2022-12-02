@@ -16,6 +16,7 @@
 """Defines routines to compute mel spectrogram features from audio waveform."""
 
 import numpy as np
+import torch
 
 
 def frame(data, window_length, hop_length):
@@ -38,10 +39,11 @@ def frame(data, window_length, hop_length):
     (N+1)-D np.array with as many rows as there are complete frames that can be
     extracted.
   """
+  # print(data.shape)
   num_samples = data.shape[0]
   num_frames = 1 + int(np.floor((num_samples - window_length) / hop_length))
   shape = (num_frames, window_length) + data.shape[1:]
-  strides = (data.strides[0] * hop_length,) + data.strides
+  strides = (data.stride(0) * hop_length,) + data.strides
   return np.lib.stride_tricks.as_strided(data, shape=shape, strides=strides)
 
 
@@ -64,8 +66,8 @@ def periodic_hann(window_length):
   Returns:
     A 1D np.array containing the periodic hann window.
   """
-  return 0.5 - (0.5 * np.cos(2 * np.pi / window_length *
-                             np.arange(window_length)))
+  return 0.5 - (0.5 * torch.cos(2 * np.pi / window_length *
+                             torch.arange(window_length)))
 
 
 def stft_magnitude(signal, fft_length,
@@ -161,17 +163,17 @@ def spectrogram_to_mel_matrix(num_mel_bins=20,
   if upper_edge_hertz > nyquist_hertz:
     raise ValueError("upper_edge_hertz %.1f is greater than Nyquist %.1f" %
                      (upper_edge_hertz, nyquist_hertz))
-  spectrogram_bins_hertz = np.linspace(0.0, nyquist_hertz, num_spectrogram_bins)
+  spectrogram_bins_hertz = torch.linspace(0.0, nyquist_hertz, num_spectrogram_bins)
   spectrogram_bins_mel = hertz_to_mel(spectrogram_bins_hertz)
   # The i'th mel band (starting from i=1) has center frequency
   # band_edges_mel[i], lower edge band_edges_mel[i-1], and higher edge
   # band_edges_mel[i+1].  Thus, we need num_mel_bins + 2 values in
   # the band_edges_mel arrays.
-  band_edges_mel = np.linspace(hertz_to_mel(lower_edge_hertz),
+  band_edges_mel = torch.linspace(hertz_to_mel(lower_edge_hertz),
                                hertz_to_mel(upper_edge_hertz), num_mel_bins + 2)
   # Matrix to post-multiply feature arrays whose rows are num_spectrogram_bins
   # of spectrogram values.
-  mel_weights_matrix = np.empty((num_spectrogram_bins, num_mel_bins))
+  mel_weights_matrix = torch.empty((num_spectrogram_bins, num_mel_bins))
   for i in range(num_mel_bins):
     lower_edge_mel, center_mel, upper_edge_mel = band_edges_mel[i:i + 3]
     # Calculate lower and upper slopes for every spectrogram bin.
@@ -212,12 +214,15 @@ def log_mel_spectrogram(data,
   window_length_samples = int(round(audio_sample_rate * window_length_secs))
   hop_length_samples = int(round(audio_sample_rate * hop_length_secs))
   fft_length = 2 ** int(np.ceil(np.log(window_length_samples) / np.log(2.0)))
-  spectrogram = stft_magnitude(
-      data,
-      fft_length=fft_length,
-      hop_length=hop_length_samples,
-      window_length=window_length_samples)
-  mel_spectrogram = np.dot(spectrogram, spectrogram_to_mel_matrix(
-      num_spectrogram_bins=spectrogram.shape[1],
-      audio_sample_rate=audio_sample_rate, **kwargs))
-  return np.log(mel_spectrogram + log_offset)
+  stft = torch.stft(
+        data,
+        n_fft=fft_length,
+        hop_length=hop_length_samples,
+        win_length=window_length_samples,
+        window=periodic_hann(window_length_samples).to(data.device)
+  )
+  spectrogram = torch.permute(torch.sqrt((stft ** 2).sum(-1)).to(data.device), (0,2,1))
+  mel_spectrogram = torch.matmul(spectrogram, spectrogram_to_mel_matrix(
+      num_spectrogram_bins=spectrogram.shape[-1],
+      audio_sample_rate=audio_sample_rate, **kwargs).to(data.device))
+  return torch.log(mel_spectrogram + log_offset)

@@ -7,11 +7,11 @@ from . import vggish_input, vggish_params
 
 
 class VGG(nn.Module):
-    def __init__(self, features):
+    def __init__(self, features, cnn_height=4, cnn_width=6):
         super(VGG, self).__init__()
         self.features = features
         self.embeddings = nn.Sequential(
-            nn.Linear(512 * 4 * 6, 4096),
+            nn.Linear(512 * cnn_height * cnn_width, 4096),
             nn.ReLU(True),
             nn.Linear(4096, 4096),
             nn.ReLU(True),
@@ -19,6 +19,7 @@ class VGG(nn.Module):
             nn.ReLU(True))
 
     def forward(self, x):
+        # print(x.shape)
         x = self.features(x)
 
         # Transpose the output from features to
@@ -86,6 +87,7 @@ class Postprocessor(nn.Module):
         # - Transpose result back to [batch_size, embedding_size].
         pca_applied = torch.mm(self.pca_eigen_vectors, (embeddings_batch.t() - self.pca_means)).t()
 
+        # if not self.training:
         # Quantize by:
         # - clipping to [min, max] range
         clipped_embeddings = torch.clamp(
@@ -100,15 +102,16 @@ class Postprocessor(nn.Module):
             )
         )
         return torch.squeeze(quantized_embeddings)
+        # else:
+        #     return torch.squeeze(pca_applied)
 
     def forward(self, x):
         return self.postprocess(x)
 
 
-def make_layers():
+def make_layers(in_channels=1, layer_desc=[64, "M", 128, "M", 256, 256, "M", 512, 512, "M"]):
     layers = []
-    in_channels = 1
-    for v in [64, "M", 128, "M", 256, 256, "M", 512, 512, "M"]:
+    for v in layer_desc:
         if v == "M":
             layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
         else:
@@ -141,9 +144,9 @@ def _vgg():
 
 
 class VGGish(VGG):
-    def __init__(self, urls, device=None, pretrained=True, preprocess=True, postprocess=True, progress=True):
-        super().__init__(make_layers())
-        if pretrained:
+    def __init__(self, urls, device=None, pretrained_net=True, pretrained_pca=True, preprocess=True, postprocess=True, progress=True):
+        super().__init__(make_layers(in_channels=1))
+        if pretrained_net:
             state_dict = hub.load_state_dict_from_url(urls['vggish'], progress=progress)
             super().load_state_dict(state_dict)
 
@@ -154,7 +157,7 @@ class VGGish(VGG):
         self.postprocess = postprocess
         if self.postprocess:
             self.pproc = Postprocessor()
-            if pretrained:
+            if pretrained_pca:
                 state_dict = hub.load_state_dict_from_url(urls['pca'], progress=progress)
                 # TODO: Convert the state_dict to torch
                 state_dict[vggish_params.PCA_EIGEN_VECTORS_NAME] = torch.as_tensor(
@@ -167,17 +170,20 @@ class VGGish(VGG):
                 self.pproc.load_state_dict(state_dict)
         self.to(self.device)
 
-    def forward(self, x, fs=None):
+    def forward(self, x, fs=16000):
+        # print(x.shape)
         if self.preprocess:
             x = self._preprocess(x, fs)
-        x = x.to(self.device)
+        x = torch.unsqueeze(x.to(self.device), axis=1)
         x = VGG.forward(self, x)
         if self.postprocess:
             x = self._postprocess(x)
+        else:
+            x = torch.squeeze(x)
         return x
 
     def _preprocess(self, x, fs):
-        if isinstance(x, np.ndarray):
+        if isinstance(x, np.ndarray) or isinstance(x, torch.Tensor):
             x = vggish_input.waveform_to_examples(x, fs)
         elif isinstance(x, str):
             x = vggish_input.wavfile_to_examples(x)
@@ -186,4 +192,5 @@ class VGGish(VGG):
         return x
 
     def _postprocess(self, x):
+        self.pproc.train(self.training)
         return self.pproc(x)

@@ -47,7 +47,7 @@ def waveform_to_examples(data, sample_rate, return_tensor=True):
   """
     # Convert to mono.
     if len(data.shape) > 1:
-        data = np.mean(data, axis=1)
+        data = torch.mean(data, axis=1)
     # Resample to the rate assumed by VGGish.
     if sample_rate != vggish_params.SAMPLE_RATE:
         data = resampy.resample(data, sample_rate, vggish_params.SAMPLE_RATE)
@@ -69,15 +69,8 @@ def waveform_to_examples(data, sample_rate, return_tensor=True):
         vggish_params.EXAMPLE_WINDOW_SECONDS * features_sample_rate))
     example_hop_length = int(round(
         vggish_params.EXAMPLE_HOP_SECONDS * features_sample_rate))
-    log_mel_examples = mel_features.frame(
-        log_mel,
-        window_length=example_window_length,
-        hop_length=example_hop_length)
 
-    if return_tensor:
-        log_mel_examples = torch.tensor(
-            log_mel_examples, requires_grad=True)[:, None, :, :].float()
-
+    log_mel_examples = log_mel[:, :example_window_length, :]
     return log_mel_examples
 
 
